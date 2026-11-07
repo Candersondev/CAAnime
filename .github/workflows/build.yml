@@ -3,6 +3,8 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -27,3 +29,14 @@ jobs:
         with:
           name: CAAnime-debug-apk
           path: app/build/outputs/apk/debug/*.apk
+      - name: Publish installable APK as prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v0.1.0-dev-${GITHUB_RUN_NUMBER}"
+          gh release create "$TAG" app/build/outputs/apk/debug/*.apk \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "CAAnime development build ${GITHUB_RUN_NUMBER}" \
+            --notes "Development/testing APK. Catalog and playback integration are not yet functional. Android debug-signed build; do not treat as a production release." \
+            --prerelease
