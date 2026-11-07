@@ -451,6 +451,8 @@ fun TvButton(label: String, onClick: () -> Unit) {
 }
 
 private val blockedAdHosts = setOf("doubleclick.net", "googlesyndication.com", "googleadservices.com", "adnxs.com", "popads.net", "popcash.net", "propellerads.com", "onclickads.net", "exoclick.com", "exosrv.com")
+private val dismissPlayerOverlays = "(function(){var n=document.querySelectorAll(\"[class*=advert],[id*=advert],[class*=popup],[id*=popup],[class*=modal],[id*=modal],[class*=overlay],[id*=overlay]\");n.forEach(function(e){if(e.querySelector(\"video\"))return;var r=e.getBoundingClientRect();var p=getComputedStyle(e).position;if(r.width>120&&r.height>100&&(p===\"fixed\"||p===\"absolute\"))e.style.setProperty(\"display\",\"none\",\"important\")})})();"
+
 private val playerCosmeticFilter = "(function(){if(document.getElementById(\"caanime-ad-style\"))return;var s=document.createElement(\"style\");s.id=\"caanime-ad-style\";s.textContent=\"iframe[src*=\\\"doubleclick.net\\\"],iframe[src*=\\\"googlesyndication.com\\\"],iframe[src*=\\\"exoclick.com\\\"],iframe[src*=\\\"exosrv.com\\\"],[id^=\\\"google_ads_\\\"],.adsbygoogle,[data-ad-client],[data-ad-slot]{display:none!important;visibility:hidden!important;pointer-events:none!important;}\";(document.head||document.documentElement).appendChild(s);})();"
 
 private fun isKnownAdHost(host: String?): Boolean {
@@ -601,6 +603,7 @@ fun VideoScreen(api: AnimeApi, episodeId: String, server: String, category: Stri
         if (!fullscreen) {
             Box(Modifier.align(Alignment.TopStart).padding(20.dp)) {
                 TvButton("Back") { onBack() }
+                if (isEmbed) TvButton("Hide ad overlay") { webViewRef.value?.evaluateJavascript(dismissPlayerOverlays, null) }
             }
         }
     }
