@@ -497,7 +497,7 @@ fun VideoScreen(api: AnimeApi, episodeId: String, server: String, category: Stri
         fullscreenRef.value = null
         fullscreen = false
     }
-    BackHandler(fullscreen) { exitFullscreen() }
+    BackHandler { if (fullscreen) exitFullscreen() else onBack() }
     DisposableEffect(episodeId, server, category) {
         onDispose {
             chromeRef.value?.onCustomViewHidden()
@@ -601,9 +601,17 @@ fun VideoScreen(api: AnimeApi, episodeId: String, server: String, category: Stri
             Text(it.take(240), color = Color.White, modifier = Modifier.align(Alignment.Center).padding(32.dp))
         }
         if (!fullscreen) {
-            Box(Modifier.align(Alignment.TopStart).padding(20.dp)) {
+            Row(
+                modifier = Modifier.align(Alignment.TopStart).padding(20.dp),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 TvButton("Back") { onBack() }
-                if (isEmbed) TvButton("Hide ad overlay") { webViewRef.value?.evaluateJavascript(dismissPlayerOverlays, null) }
+                if (isEmbed) {
+                    TvButton("Hide ad overlay") {
+                        webViewRef.value?.evaluateJavascript(dismissPlayerOverlays, null)
+                    }
+                }
             }
         }
     }
