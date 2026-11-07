@@ -523,7 +523,7 @@ private object PlayerAdBlocker {
     }
 }
 
-private val playerCosmeticFilter = "(function(){if(document.getElementById('caanime-ad-style'))return;var s=document.createElement('style');s.id='caanime-ad-style';s.textContent='iframe[src*=doubleclick],iframe[src*=googlesyndication],iframe[src*=exoclick],iframe[src*=exosrv],.adsbygoogle,[data-ad-client],[data-ad-slot]{display:none!important}';(document.head||document.documentElement).appendChild(s)})();"
+private val playerCosmeticFilter = "(function(){\n if(window.__caanimeGuard)return;\n window.__caanimeGuard=true;\n var css=document.createElement('style');\n css.textContent='iframe[src*=\"doubleclick\"],iframe[src*=\"googlesyndication\"],iframe[src*=\"exoclick\"],iframe[src*=\"exosrv\"],.adsbygoogle,[data-ad-client],[data-ad-slot]{display:none!important}';\n (document.head||document.documentElement).appendChild(css);\n var words=/advert|(^|[-_ ])ads?([-_ ]|$)|popup|popunder|interstitial|sponsor|promotion/i;\n function clean(root){\n  if(!root||!root.querySelectorAll)return;\n  var nodes=root.querySelectorAll('[id],[class],[data-ad-client],[data-ad-slot],iframe');\n  for(var i=0;i<nodes.length&&i<1500;i++){\n   var el=nodes[i];\n   if(el===document.body||el===document.documentElement||el.tagName==='VIDEO'||el.querySelector('video'))continue;\n   var name=((el.id||'')+' '+(typeof el.className==='string'?el.className:'')+' '+(el.getAttribute('data-ad-client')||''));\n   var src=el.tagName==='IFRAME'?(el.getAttribute('src')||''):'';\n   var isAd=words.test(name)||/doubleclick|googlesyndication|exoclick|exosrv/i.test(src);\n   if(!isAd)continue;\n   var rect=el.getBoundingClientRect();\n   if(rect.width<100||rect.height<65)continue;\n   var style=getComputedStyle(el);\n   if(style.position==='fixed'||style.position==='absolute'||el.tagName==='IFRAME'||el.hasAttribute('data-ad-client')){\n    el.style.setProperty('display','none','important');\n    el.style.setProperty('pointer-events','none','important');\n   }\n  }\n }\n clean(document);\n var pending=false;\n new MutationObserver(function(){\n  if(pending)return;\n  pending=true;\n  requestAnimationFrame(function(){pending=false;clean(document)});\n }).observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['class','style','src']});\n})();"
 
 @Composable
 fun VideoScreen(api: AnimeApi, episodeId: String, server: String, category: String, onBack: () -> Unit) {
@@ -593,7 +593,7 @@ fun VideoScreen(api: AnimeApi, episodeId: String, server: String, category: Stri
                             settings.useWideViewPort = true
                             settings.loadWithOverviewMode = true
                             settings.javaScriptCanOpenWindowsAutomatically = false
-                            settings.setSupportMultipleWindows(true)
+                            settings.setSupportMultipleWindows(false)
                             setBackgroundColor(android.graphics.Color.BLACK)
                             isFocusable = true
                             isFocusableInTouchMode = true
