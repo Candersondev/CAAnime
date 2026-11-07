@@ -32,32 +32,63 @@ private val accent = Color(0xFFE73B58)
 data class Anime(val id: String, val title: String, val description: String = "")
 data class Episode(val id: String, val title: String)
 
-/** API contract: GET /home -> {items:[{id,title,description}]},
- * GET /search?q= -> {items:[...]}, GET /anime/{id} -> {episodes:[{id,title}]},
- * GET /episodes/{id}/stream -> {url:"https://.../playlist.m3u8"}.
- * Provider-specific parsing belongs on the server, not inside the TV app.
+/** HiAnime-compatible API client.
+ * Set animeApiUrl to an authorized HTTPS API deployment root.
+ * Supported routes: /api/v2/hianime/home, /search, /anime/{id}/episodes,
+ * and /episode/sources. WBRK-dev's Rust API uses different endpoints;
+ * see README for compatibility and provider limitations.
  */
 class AnimeApi {
     private val client = OkHttpClient()
     private val base = BuildConfig.API_BASE_URL.trimEnd('/')
+    private val prefix = "/api/v2/hianime"
+    private fun enc(value: String) = java.net.URLEncoder.encode(value, "UTF-8")
     private suspend fun get(path: String): JSONObject = withContext(Dispatchers.IO) {
-        require(base.startsWith("https://") && !base.contains("example.invalid")) { "Configure animeApiUrl with an HTTPS API endpoint" }
-        val response = client.newCall(Request.Builder().url(base + path).build()).execute()
-        response.use { require(it.isSuccessful) { "API HTTP ${it.code}" }; JSONObject(it.body?.string() ?: "{}") }
+        require(base.startsWith("https://") && !base.contains("example.invalid")) {
+            "Set the ANIME_API_URL GitHub Actions variable to your HTTPS HiAnime-compatible API"
+        }
+        client.newCall(Request.Builder().url(base + path).build()).execute().use { response ->
+            require(response.isSuccessful) { "API HTTP ${response.code} on $path" }
+            JSONObject(response.body?.string() ?: "{}")
+        }
     }
-    private fun animeList(json: JSONObject): List<Anime> {
-        val arr = json.optJSONArray("items") ?: return emptyList()
-        return (0 until arr.length()).mapNotNull { i -> arr.optJSONObject(i)?.let {
-            Anime(it.optString("id"), it.optString("title"), it.optString("description"))
-        } }.filter { it.id.isNotBlank() && it.title.isNotBlank() }
+    private fun data(json: JSONObject): JSONObject = json.optJSONObject("data") ?: json
+    private fun animeList(arr: org.json.JSONArray?): List<Anime> {
+        if (arr == null) return emptyList()
+        return (0 until arr.length()).mapNotNull { index ->
+            arr.optJSONObject(index)?.let { item ->
+                Anime(item.optString("id"), item.optString("name").ifBlank { item.optString("title") },
+                    item.optString("description").ifBlank { item.optString("discription") })
+            }
+        }.filter { it.id.isNotBlank() && it.title.isNotBlank() }
     }
-    suspend fun home() = animeList(get("/home"))
-    suspend fun search(q: String) = animeList(get("/search?q=" + java.net.URLEncoder.encode(q, "UTF-8")))
+    suspend fun home(): List<Anime> {
+        val json = data(get("$prefix/home"))
+        val spotlight = animeList(json.optJSONArray("spotlightAnimes") ?: json.optJSONArray("spotlight"))
+        val trending = animeList(json.optJSONArray("trendingAnimes") ?: json.optJSONArray("trending"))
+        val latest = animeList(json.optJSONArray("latestEpisodeAnimes") ?: json.optJSONArray("latest_episodes"))
+        return (spotlight + trending + latest).distinctBy { it.id }
+    }
+    suspend fun search(q: String): List<Anime> {
+        val json = data(get("$prefix/search?q=${enc(q)}"))
+        return animeList(json.optJSONArray("animes") ?: json.optJSONArray("items"))
+    }
     suspend fun episodes(id: String): List<Episode> {
-        val arr = get("/anime/" + java.net.URLEncoder.encode(id, "UTF-8")).optJSONArray("episodes") ?: return emptyList()
-        return (0 until arr.length()).mapNotNull { arr.optJSONObject(it)?.let { e -> Episode(e.optString("id"), e.optString("title")) } }.filter { it.id.isNotBlank() }
+        val json = data(get("$prefix/anime/${enc(id)}/episodes"))
+        val arr = json.optJSONArray("episodes") ?: return emptyList()
+        return (0 until arr.length()).mapNotNull { index ->
+            arr.optJSONObject(index)?.let { e ->
+                Episode(e.optString("episodeId").ifBlank { e.optString("episode_id").ifBlank { e.optString("id") } },
+                    e.optString("title").ifBlank { "Episode ${e.optInt("number", index + 1)}" })
+            }
+        }.filter { it.id.isNotBlank() }
     }
-    suspend fun stream(id: String): String = get("/episodes/" + java.net.URLEncoder.encode(id, "UTF-8") + "/stream").getString("url")
+    suspend fun stream(id: String): String {
+        val json = data(get("$prefix/episode/sources?animeEpisodeId=${enc(id)}&server=hd-1&category=sub"))
+        val sources = json.optJSONArray("sources")
+        require(sources != null && sources.length() > 0) { "No playable sources returned" }
+        return sources.getJSONObject(0).getString("url")
+    }
 }
 
 class MainActivity : ComponentActivity() {
