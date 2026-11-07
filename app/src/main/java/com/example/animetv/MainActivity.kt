@@ -451,6 +451,8 @@ fun TvButton(label: String, onClick: () -> Unit) {
 }
 
 private val blockedAdHosts = setOf("doubleclick.net", "googlesyndication.com", "googleadservices.com", "adnxs.com", "popads.net", "popcash.net", "propellerads.com", "onclickads.net", "exoclick.com", "exosrv.com")
+private val playerCosmeticFilter = "(function(){if(document.getElementById(\"caanime-ad-style\"))return;var s=document.createElement(\"style\");s.id=\"caanime-ad-style\";s.textContent=\"iframe[src*=\\\"doubleclick.net\\\"],iframe[src*=\\\"googlesyndication.com\\\"],iframe[src*=\\\"exoclick.com\\\"],iframe[src*=\\\"exosrv.com\\\"],[id^=\\\"google_ads_\\\"],.adsbygoogle,[data-ad-client],[data-ad-slot]{display:none!important;visibility:hidden!important;pointer-events:none!important;}\";(document.head||document.documentElement).appendChild(s);})();"
+
 private fun isKnownAdHost(host: String?): Boolean {
     val h = host?.lowercase()?.trimEnd('.') ?: return false
     return blockedAdHosts.any { h == it || h.endsWith(".$it") }
@@ -540,6 +542,7 @@ fun VideoScreen(api: AnimeApi, episodeId: String, server: String, category: Stri
                                         !target.host.equals(embedHost, ignoreCase = true)
                                 }
                                 override fun onPageFinished(view: WebView?, url: String?) {
+                                    view?.evaluateJavascript(playerCosmeticFilter, null)
                                     loading = false
                                 }
                                 override fun onReceivedError(view: WebView?, request: WebResourceRequest?, failure: WebResourceError?) {
