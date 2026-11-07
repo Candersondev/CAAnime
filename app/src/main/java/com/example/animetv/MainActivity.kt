@@ -75,6 +75,32 @@ class AnimeApi {
             }
         } catch (e: Exception) { "Website check failed: ${e.javaClass.simpleName}: ${e.message ?: "unknown error"}" }
     }
+    /** Diagnostic only: inspect public page links without relying on undocumented APIs. */
+    suspend fun inspectCatalog(): String = withContext(Dispatchers.IO) {
+        val target = "https://aniwatchtv.ws/"
+        try {
+            client.newCall(Request.Builder().url(target)
+                .header("User-Agent", "Mozilla/5.0 (Linux; Android 11; Android TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+                .build()).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                val contentType = response.header("Content-Type").orEmpty()
+                if (!response.isSuccessful) return@withContext "Catalog check: HTTP ${response.code}"
+                if (!contentType.contains("html", ignoreCase = true)) return@withContext "Catalog check: unexpected content type $contentType"
+                val links = Regex("""href\\s*=\\s*["']([^"'#]+)["']""", RegexOption.IGNORE_CASE)
+                    .findAll(body).map { it.groupValues[1] }
+                    .filter { it.contains("/watch/") || it.contains("/anime/") }
+                    .distinct().take(8).toList()
+                val title = Regex("""<title[^>]*>(.*?)</title>""", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+                    .find(body)?.groupValues?.get(1)?.replace(Regex("<[^>]+>"), "")?.trim().orEmpty().take(80)
+                buildString {
+                    append("Catalog diagnostic: HTTP ${response.code}; HTML chars=${body.length}; title=$title")
+                    append("; matching links=${links.size} (first 8 max)")
+                    if (links.isEmpty()) append(". No watch/anime links found in initial HTML; content may be JavaScript-rendered.")
+                    else links.forEach { append("\\n"); append(it.take(120)) }
+                }
+            }
+        } catch (e: Exception) { "Catalog check failed: ${e.javaClass.simpleName}: ${e.message ?: "unknown error"}" }
+    }
     suspend fun home(): List<Anime> {
         val json = data(get("$prefix/home"))
         val spotlight = animeList(json.optJSONArray("spotlightAnimes") ?: json.optJSONArray("spotlight"))
@@ -153,6 +179,13 @@ fun AnimeApp() {
             TvButton("Home") { screen = "home" }
             TvButton("Search") { screen = "search" }
             TvButton("Refresh") { refresh++ }
+            TvButton("Inspect catalog") {
+                scope.launch {
+                    checking = true
+                    diagnostic = api.inspectCatalog()
+                    checking = false
+                }
+            }
             TvButton("Check website") {
                 scope.launch {
                     checking = true
