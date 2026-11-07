@@ -466,6 +466,7 @@ fun VideoScreen(api: AnimeApi, episodeId: String, server: String, category: Stri
     var url by remember(episodeId, server, category) { mutableStateOf<String?>(null) }
     var error by remember(episodeId, server, category) { mutableStateOf<String?>(null) }
     var loading by remember(episodeId, server, category) { mutableStateOf(true) }
+    var adDiagnostic by remember(episodeId, server, category) { mutableStateOf<String?>(null) }
     var fullscreen by remember(episodeId, server, category) { mutableStateOf(false) }
     val webViewRef = remember { mutableStateOf<WebView?>(null) }
     val chromeRef = remember { mutableStateOf<WebChromeClient.CustomViewCallback?>(null) }
@@ -601,6 +602,14 @@ fun VideoScreen(api: AnimeApi, episodeId: String, server: String, category: Stri
             Text(it.take(240), color = Color.White, modifier = Modifier.align(Alignment.Center).padding(32.dp))
         }
         if (!fullscreen) {
+            adDiagnostic?.let { status ->
+                Text(
+                    status,
+                    color = Color.White,
+                    modifier = Modifier.align(Alignment.BottomStart)
+                        .background(Color(0xCC222222)).padding(12.dp)
+                )
+            }
             Row(
                 modifier = Modifier.align(Alignment.TopStart).padding(20.dp),
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
@@ -609,7 +618,26 @@ fun VideoScreen(api: AnimeApi, episodeId: String, server: String, category: Stri
                 TvButton("Back") { onBack() }
                 if (isEmbed) {
                     TvButton("Hide ad overlay") {
-                        webViewRef.value?.evaluateJavascript(dismissPlayerOverlays, null)
+                        webViewRef.value?.evaluateJavascript(
+                            """(function(){
+                                var frames=document.querySelectorAll('iframe');
+                                var accessible=0;
+                                frames.forEach(function(f){try{if(f.contentDocument)accessible++;}catch(e){}});
+                                var selectors='[class*=advert],[id*=advert],[class*=popup],[id*=popup],[class*=modal],[id*=modal],[class*=overlay],[id*=overlay]';
+                                var candidates=document.querySelectorAll(selectors);
+                                var hidden=0;
+                                candidates.forEach(function(e){
+                                    if(e.querySelector('video'))return;
+                                    var r=e.getBoundingClientRect(),p=getComputedStyle(e).position;
+                                    if(r.width>120&&r.height>100&&(p==='fixed'||p==='absolute')){
+                                        e.style.setProperty('display','none','important');hidden++;
+                                    }
+                                });
+                                return 'Found '+candidates.length+' candidates; hidden '+hidden+'; frames '+frames.length+'; accessible '+accessible;
+                            })();"""
+                        ) { result ->
+                            adDiagnostic = result.trim('"').replace("\\u003d", "=")
+                        }
                     }
                 }
             }
