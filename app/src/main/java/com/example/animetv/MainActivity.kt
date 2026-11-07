@@ -136,9 +136,41 @@ class AnimeApi {
         }
         return result.values.toList()
     }
+    private fun extractEmbeddedAnime(document: Document): List<Anime> {
+        val results = linkedMapOf<String, Anime>()
+        fun visit(value: Any?, depth: Int) {
+            if (depth > 14 || results.size >= 150) return
+            when (value) {
+                is JSONObject -> {
+                    val id = value.optString("id").ifBlank { value.optString("slug") }
+                    val name = value.optString("name").ifBlank { value.optString("title") }
+                    if (id.matches(Regex("[a-zA-Z0-9_-]+-[0-9]+")) && name.length in 2..160)
+                        results.putIfAbsent(id, Anime(id, name, value.optString("description")))
+                    val keys = value.keys()
+                    while (keys.hasNext()) visit(value.opt(keys.next()), depth + 1)
+                }
+                is org.json.JSONArray -> for (i in 0 until minOf(value.length(), 400)) visit(value.opt(i), depth + 1)
+            }
+        }
+        document.select("script#__NEXT_DATA__, script[type=application/json]").forEach { script ->
+            runCatching { visit(org.json.JSONTokener(script.data()).nextValue(), 0) }
+        }
+        return results.values.toList()
+    }
+    private fun websiteAnime(document: Document): List<Anime> =
+        (extractWebsiteAnime(document) + extractEmbeddedAnime(document)).distinctBy { it.id }
     private val configuredApi get() = base.startsWith("https://") && !base.contains("example.invalid")
     suspend fun home(): List<Anime> {
-        if (!configuredApi) return extractWebsiteAnime(websitePage("/"))
+        if (!configuredApi) {
+            val homepage = websitePage("/home")
+            val found = websiteAnime(homepage)
+            if (found.isNotEmpty()) return found
+            val root = websiteAnime(websitePage("/"))
+            if (root.isNotEmpty()) return root
+            val nextData = homepage.selectFirst("script#__NEXT_DATA__") != null
+            val flight = homepage.html().contains("__next_f.push")
+            throw IllegalStateException("No anime found in HTML or embedded JSON (Next data=$nextData, flight=$flight). Catalog may load dynamically.")
+        }
         val json = data(get("$prefix/home"))
         val spotlight = animeList(json.optJSONArray("spotlightAnimes") ?: json.optJSONArray("spotlight"))
         val trending = animeList(json.optJSONArray("trendingAnimes") ?: json.optJSONArray("trending"))
@@ -146,7 +178,11 @@ class AnimeApi {
         return (spotlight + trending + latest).distinctBy { it.id }
     }
     suspend fun search(q: String): List<Anime> {
-        if (!configuredApi) return extractWebsiteAnime(websitePage("/search?keyword=${enc(q)}"))
+        if (!configuredApi) {
+            val results = websiteAnime(websitePage("/search?keyword=${enc(q)}"))
+            if (results.isEmpty()) throw IllegalStateException("Search returned no parseable anime; data may load dynamically")
+            return results
+        }
         val json = data(get("$prefix/search?q=${enc(q)}"))
         return animeList(json.optJSONArray("animes") ?: json.optJSONArray("items"))
     }
