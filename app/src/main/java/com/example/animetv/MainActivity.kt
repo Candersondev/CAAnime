@@ -1,6 +1,8 @@
 package com.example.animetv
 
 import android.os.Bundle
+import android.content.Context
+import java.util.concurrent.atomic.AtomicReference
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.webkit.WebChromeClient
@@ -450,23 +452,86 @@ fun TvButton(label: String, onClick: () -> Unit) {
     }
 }
 
-private val blockedAdHosts = setOf("doubleclick.net", "googlesyndication.com", "googleadservices.com", "adnxs.com", "popads.net", "popcash.net", "propellerads.com", "onclickads.net", "exoclick.com", "exosrv.com")
-private val dismissPlayerOverlays = "(function(){var n=document.querySelectorAll(\"[class*=advert],[id*=advert],[class*=popup],[id*=popup],[class*=modal],[id*=modal],[class*=overlay],[id*=overlay]\");n.forEach(function(e){if(e.querySelector(\"video\"))return;var r=e.getBoundingClientRect();var p=getComputedStyle(e).position;if(r.width>120&&r.height>100&&(p===\"fixed\"||p===\"absolute\"))e.style.setProperty(\"display\",\"none\",\"important\")})})();"
+/**
+ * In-app DNS-style domain filtering for WebView requests.
+ * The public AdGuard DNS filter is downloaded in the background, cached on device,
+ * and refreshed at most once per day. No VPN, device DNS changes or user setup.
+ */
+private object PlayerAdBlocker {
+    private const val LIST_URL = "https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt"
+    private const val PREFS = "caanime_ad_filter"
+    private const val REFRESH_MS = 24L * 60 * 60 * 1000
+    private val fallback = setOf(
+        "doubleclick.net", "googlesyndication.com", "googleadservices.com",
+        "adnxs.com", "popads.net", "popcash.net", "propellerads.com",
+        "onclickads.net", "exoclick.com", "exosrv.com"
+    )
+    private val hosts = AtomicReference(fallback)
+    private val updating = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(20, java.util.concurrent.TimeUnit.SECONDS).build()
 
-private val playerCosmeticFilter = "(function(){if(document.getElementById(\"caanime-ad-style\"))return;var s=document.createElement(\"style\");s.id=\"caanime-ad-style\";s.textContent=\"iframe[src*=\\\"doubleclick.net\\\"],iframe[src*=\\\"googlesyndication.com\\\"],iframe[src*=\\\"exoclick.com\\\"],iframe[src*=\\\"exosrv.com\\\"],[id^=\\\"google_ads_\\\"],.adsbygoogle,[data-ad-client],[data-ad-slot]{display:none!important;visibility:hidden!important;pointer-events:none!important;}\";(document.head||document.documentElement).appendChild(s);})();"
+    fun initialize(context: Context) {
+        val app = context.applicationContext
+        val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val cached = prefs.getString("hosts", null)
+        if (!cached.isNullOrBlank()) {
+            hosts.set(fallback + cached.lineSequence().filter { it.isNotBlank() }.toSet())
+        }
+        if (System.currentTimeMillis() - prefs.getLong("updated", 0) < REFRESH_MS) return
+        if (!updating.compareAndSet(false, true)) return
+        Thread {
+            try {
+                client.newCall(Request.Builder().url(LIST_URL).build()).execute().use { response ->
+                    if (!response.isSuccessful) return@use
+                    val raw = response.body?.string() ?: return@use
+                    val parsed = raw.lineSequence().mapNotNull { line ->
+                        val text = line.trim()
+                        if (!text.startsWith("||") || !text.endsWith("^")) return@mapNotNull null
+                        val domain = text.substring(2, text.length - 1).lowercase()
+                        domain.takeIf { it.length in 4..253 &&
+                            it.all { c -> c in 'a'..'z' || c in '0'..'9' || c == '.' || c == '-' } &&
+                            domain.contains('.') }
+                    }.toSet()
+                    // Never replace a working cached list with a failed or incomplete download.
+                    if (parsed.size < 1000) return@use
+                    hosts.set(fallback + parsed)
+                    prefs.edit().putString("hosts", parsed.joinToString("\n"))
+                        .putLong("updated", System.currentTimeMillis()).apply()
+                }
+            } catch (_: Exception) {
+                // Offline playback still uses the bundled fallback and cached rules.
+            } finally {
+                updating.set(false)
+            }
+        }.apply { name = "CAAnime-AdBlock-Update"; isDaemon = true }.start()
+    }
 
-private fun isKnownAdHost(host: String?): Boolean {
-    val h = host?.lowercase()?.trimEnd('.') ?: return false
-    return blockedAdHosts.any { h == it || h.endsWith(".$it") }
+    fun blocks(host: String?): Boolean {
+        val h = host?.lowercase()?.trimEnd('.') ?: return false
+        // Never block the main site or its subdomains through a broad filter rule.
+        if (h == "aniwatchtv.ws" || h.endsWith(".aniwatchtv.ws")) return false
+        val snapshot = hosts.get()
+        var suffix = h
+        while (true) {
+            if (suffix in snapshot) return true
+            val dot = suffix.indexOf('.')
+            if (dot < 0) return false
+            suffix = suffix.substring(dot + 1)
+        }
+    }
 }
+
+private val playerCosmeticFilter = "(function(){if(document.getElementById('caanime-ad-style'))return;var s=document.createElement('style');s.id='caanime-ad-style';s.textContent='iframe[src*=doubleclick],iframe[src*=googlesyndication],iframe[src*=exoclick],iframe[src*=exosrv],.adsbygoogle,[data-ad-client],[data-ad-slot]{display:none!important}';(document.head||document.documentElement).appendChild(s)})();"
 
 @Composable
 fun VideoScreen(api: AnimeApi, episodeId: String, server: String, category: String, onBack: () -> Unit) {
     val context = LocalContext.current
+    LaunchedEffect(context) { PlayerAdBlocker.initialize(context) }
     var url by remember(episodeId, server, category) { mutableStateOf<String?>(null) }
     var error by remember(episodeId, server, category) { mutableStateOf<String?>(null) }
     var loading by remember(episodeId, server, category) { mutableStateOf(true) }
-    var adDiagnostic by remember(episodeId, server, category) { mutableStateOf<String?>(null) }
     var fullscreen by remember(episodeId, server, category) { mutableStateOf(false) }
     val webViewRef = remember { mutableStateOf<WebView?>(null) }
     val chromeRef = remember { mutableStateOf<WebChromeClient.CustomViewCallback?>(null) }
@@ -534,14 +599,14 @@ fun VideoScreen(api: AnimeApi, episodeId: String, server: String, category: Stri
                             isFocusableInTouchMode = true
                             webViewClient = object : WebViewClient() {
                                 override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
-                                    if (!isKnownAdHost(request?.url?.host)) return null
+                                    if (!PlayerAdBlocker.blocks(request?.url?.host)) return null
                                     return WebResourceResponse("text/plain", "UTF-8", 204, "No Content", emptyMap(), java.io.ByteArrayInputStream(ByteArray(0)))
                                 }
                                 override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                                     if (request == null || !request.isForMainFrame) return false
                                     val target = request.url
                                     val embedHost = Uri.parse(embedUrl).host
-                                    return isKnownAdHost(target.host) || target.scheme !in listOf("https", "http") ||
+                                    return PlayerAdBlocker.blocks(target.host) || target.scheme !in listOf("https", "http") ||
                                         !target.host.equals(embedHost, ignoreCase = true)
                                 }
                                 override fun onPageFinished(view: WebView?, url: String?) {
@@ -602,61 +667,13 @@ fun VideoScreen(api: AnimeApi, episodeId: String, server: String, category: Stri
             Text(it.take(240), color = Color.White, modifier = Modifier.align(Alignment.Center).padding(32.dp))
         }
         if (!fullscreen) {
-            adDiagnostic?.let { status ->
-                Text(
-                    status,
-                    color = Color.White,
-                    modifier = Modifier.align(Alignment.BottomStart)
-                        .background(Color(0xCC222222)).padding(12.dp)
-                )
-            }
             Row(
                 modifier = Modifier.align(Alignment.TopStart).padding(20.dp),
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 TvButton("Back") { onBack() }
-                if (isEmbed) {
-                    TvButton("Hide ad overlay") {
-                        webViewRef.value?.evaluateJavascript(
-                            """(function(){
- var found=0,hidden=0,frames=0,accessible=0,blocked=0,frameHidden=0;
- var selector='[class*=advert],[id*=advert],[class*=popup],[id*=popup],[class*=modal],[id*=modal],[class*=overlay],[id*=overlay],[class*=banner],[id*=banner],[class*=interstitial],[id*=interstitial]';
- function scan(doc,depth){
-  if(!doc||depth>4)return;
-  var win=doc.defaultView;if(!win)return;
-  doc.querySelectorAll(selector).forEach(function(el){
-   found++;
-   if(el.closest('video')||el.querySelector('video'))return;
-   var r=el.getBoundingClientRect(),st=win.getComputedStyle(el);
-   if(r.width<150||r.height<100||st.display==='none'||st.visibility==='hidden')return;
-   var label=((el.id||'')+' '+(typeof el.className==='string'?el.className:'')).toLowerCase();
-   if(!/advert|popup|modal|overlay|interstitial|banner/.test(label))return;
-   if(!(st.position==='fixed'||st.position==='absolute'||Number(st.zIndex)>100))return;
-   if(el.querySelector('iframe')&&r.width>win.innerWidth*.85&&r.height>win.innerHeight*.85)return;
-   el.style.setProperty('display','none','important');hidden++;
-  });
-  doc.querySelectorAll('iframe').forEach(function(frame){
-   frames++;
-   var r=frame.getBoundingClientRect(),st=win.getComputedStyle(frame);
-   var src=(frame.getAttribute('src')||'').toLowerCase();
-   var adHost=/doubleclick|googlesyndication|exoclick|exosrv|popads|popcash|propellerads|onclickads|adnxs/.test(src);
-   var small=r.width>=150&&r.height>=100&&r.width<win.innerWidth*.8&&r.height<win.innerHeight*.8;
-   var overlay=st.position==='fixed'||st.position==='absolute'||Number(st.zIndex)>100;
-   if(adHost||(small&&overlay)){
-    frame.style.setProperty('display','none','important');frameHidden++;return;
-   }
-   try{var child=frame.contentDocument;if(child&&child.documentElement){accessible++;scan(child,depth+1);}else blocked++;}catch(e){blocked++;}
-  });
- }
- scan(document,0);
- return 'Found '+found+'; hidden '+hidden+'; ad frames hidden '+frameHidden+'; frames '+frames+'; accessible '+accessible+'; blocked '+blocked;
-})();"""
-                        ) { result ->
-                            adDiagnostic = result.trim('"').replace("\\u003d", "=")
-                        }
-                    }
-                }
+
             }
         }
     }
