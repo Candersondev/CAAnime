@@ -620,33 +620,37 @@ fun VideoScreen(api: AnimeApi, episodeId: String, server: String, category: Stri
                     TvButton("Hide ad overlay") {
                         webViewRef.value?.evaluateJavascript(
                             """(function(){
- var found=0, hidden=0, frames=0, accessible=0, blocked=0;
- var selector="[class*=advert],[id*=advert],[class*=popup],[id*=popup],[class*=modal],[id*=modal],[class*=overlay],[id*=overlay],[class*=banner],[id*=banner],[class*=interstitial],[id*=interstitial]";
+ var found=0,hidden=0,frames=0,accessible=0,blocked=0,frameHidden=0;
+ var selector='[class*=advert],[id*=advert],[class*=popup],[id*=popup],[class*=modal],[id*=modal],[class*=overlay],[id*=overlay],[class*=banner],[id*=banner],[class*=interstitial],[id*=interstitial]';
  function scan(doc,depth){
   if(!doc||depth>4)return;
-  var win=doc.defaultView;
-  if(!win)return;
-  var nodes=doc.querySelectorAll(selector);
-  nodes.forEach(function(el){
+  var win=doc.defaultView;if(!win)return;
+  doc.querySelectorAll(selector).forEach(function(el){
    found++;
-   if(el.closest("video")||el.querySelector("video"))return;
-   var rect=el.getBoundingClientRect();
-   var st=win.getComputedStyle(el);
-   if(rect.width<150||rect.height<100||st.display==="none"||st.visibility==="hidden")return;
-   var label=((el.id||"")+" "+(typeof el.className==="string"?el.className:"")).toLowerCase();
-   var named=/advert|popup|modal|overlay|interstitial|banner/.test(label);
-   var positioned=st.position==="fixed"||st.position==="absolute"||Number(st.zIndex)>100;
-   if(!named||!positioned)return;
-   if(el.querySelector("iframe")&&rect.width>win.innerWidth*0.85&&rect.height>win.innerHeight*0.85)return;
-   el.style.setProperty("display","none","important");hidden++;
+   if(el.closest('video')||el.querySelector('video'))return;
+   var r=el.getBoundingClientRect(),st=win.getComputedStyle(el);
+   if(r.width<150||r.height<100||st.display==='none'||st.visibility==='hidden')return;
+   var label=((el.id||'')+' '+(typeof el.className==='string'?el.className:'')).toLowerCase();
+   if(!/advert|popup|modal|overlay|interstitial|banner/.test(label))return;
+   if(!(st.position==='fixed'||st.position==='absolute'||Number(st.zIndex)>100))return;
+   if(el.querySelector('iframe')&&r.width>win.innerWidth*.85&&r.height>win.innerHeight*.85)return;
+   el.style.setProperty('display','none','important');hidden++;
   });
-  doc.querySelectorAll("iframe").forEach(function(frame){
+  doc.querySelectorAll('iframe').forEach(function(frame){
    frames++;
+   var r=frame.getBoundingClientRect(),st=win.getComputedStyle(frame);
+   var src=(frame.getAttribute('src')||'').toLowerCase();
+   var adHost=/doubleclick|googlesyndication|exoclick|exosrv|popads|popcash|propellerads|onclickads|adnxs/.test(src);
+   var small=r.width>=150&&r.height>=100&&r.width<win.innerWidth*.8&&r.height<win.innerHeight*.8;
+   var overlay=st.position==='fixed'||st.position==='absolute'||Number(st.zIndex)>100;
+   if(adHost||(small&&overlay)){
+    frame.style.setProperty('display','none','important');frameHidden++;return;
+   }
    try{var child=frame.contentDocument;if(child&&child.documentElement){accessible++;scan(child,depth+1);}else blocked++;}catch(e){blocked++;}
   });
  }
  scan(document,0);
- return "Found "+found+"; hidden "+hidden+"; frames "+frames+"; accessible "+accessible+"; blocked "+blocked;
+ return 'Found '+found+'; hidden '+hidden+'; ad frames hidden '+frameHidden+'; frames '+frames+'; accessible '+accessible+'; blocked '+blocked;
 })();"""
                         ) { result ->
                             adDiagnostic = result.trim('"').replace("\\u003d", "=")
