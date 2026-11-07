@@ -4,6 +4,13 @@ import android.os.Bundle
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
+import android.view.View
+import android.view.ViewGroup
+import android.widget.FrameLayout
+import androidx.compose.ui.platform.LocalContext
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.BackHandler
@@ -443,37 +450,138 @@ fun TvButton(label: String, onClick: () -> Unit) {
 
 @Composable
 fun VideoScreen(api: AnimeApi, episodeId: String, server: String, category: String, onBack: () -> Unit) {
-    val context = androidx.compose.ui.platform.LocalContext.current
+    val context = LocalContext.current
     var url by remember(episodeId, server, category) { mutableStateOf<String?>(null) }
-    var error by remember(episodeId) { mutableStateOf<String?>(null) }
+    var error by remember(episodeId, server, category) { mutableStateOf<String?>(null) }
+    var loading by remember(episodeId, server, category) { mutableStateOf(true) }
+    var fullscreen by remember(episodeId, server, category) { mutableStateOf(false) }
+    val webViewRef = remember { mutableStateOf<WebView?>(null) }
+    val chromeRef = remember { mutableStateOf<WebChromeClient.CustomViewCallback?>(null) }
+    val fullscreenRef = remember { mutableStateOf<View?>(null) }
+    val containerRef = remember { mutableStateOf<FrameLayout?>(null) }
+
     LaunchedEffect(episodeId, server, category) {
-        try { url = api.stream(episodeId, server, category) } catch (e: Exception) { error = e.message }
+        try {
+            url = api.stream(episodeId, server, category)
+        } catch (e: Exception) {
+            error = e.message ?: "Unable to resolve playback"
+            loading = false
+        }
     }
     val player = remember(context) { ExoPlayer.Builder(context).build() }
     DisposableEffect(player) { onDispose { player.release() } }
     val isEmbed = url?.let { !it.contains(".m3u8", true) && !it.contains(".mp4", true) } ?: false
-    LaunchedEffect(url) { url?.takeUnless { isEmbed }?.let { player.setMediaItem(MediaItem.fromUri(it)); player.prepare(); player.playWhenReady = true } }
+    LaunchedEffect(url) {
+        url?.takeUnless { isEmbed }?.let {
+            player.setMediaItem(MediaItem.fromUri(it))
+            player.prepare()
+            player.playWhenReady = true
+            loading = false
+        }
+    }
+    fun exitFullscreen() {
+        chromeRef.value?.onCustomViewHidden()
+        chromeRef.value = null
+        fullscreenRef.value = null
+        fullscreen = false
+    }
+    BackHandler(fullscreen) { exitFullscreen() }
+    DisposableEffect(episodeId, server, category) {
+        onDispose {
+            chromeRef.value?.onCustomViewHidden()
+            chromeRef.value = null
+            containerRef.value?.removeAllViews()
+            webViewRef.value?.apply {
+                stopLoading()
+                loadUrl("about:blank")
+                destroy()
+            }
+            webViewRef.value = null
+        }
+    }
+
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         if (isEmbed && url != null) {
             val embedUrl = url!!
             AndroidView(
                 factory = { ctx ->
-                    WebView(ctx).apply {
-                        settings.javaScriptEnabled = true
-                        settings.domStorageEnabled = true
-                        webViewClient = WebViewClient()
-                        webChromeClient = WebChromeClient()
-                        isFocusable = true
-                        loadUrl(embedUrl)
+                    FrameLayout(ctx).apply {
+                        containerRef.value = this
+                        val browser = WebView(ctx).apply {
+                            settings.javaScriptEnabled = true
+                            settings.domStorageEnabled = true
+                            settings.mediaPlaybackRequiresUserGesture = false
+                            settings.cacheMode = WebSettings.LOAD_DEFAULT
+                            settings.useWideViewPort = true
+                            settings.loadWithOverviewMode = true
+                            setBackgroundColor(android.graphics.Color.BLACK)
+                            isFocusable = true
+                            isFocusableInTouchMode = true
+                            webViewClient = object : WebViewClient() {
+                                override fun onPageFinished(view: WebView?, url: String?) {
+                                    loading = false
+                                }
+                                override fun onReceivedError(view: WebView?, request: WebResourceRequest?, failure: WebResourceError?) {
+                                    if (request?.isForMainFrame == true) {
+                                        error = "Player page failed to load: ${failure?.description ?: "network error"}"
+                                        loading = false
+                                    }
+                                }
+                            }
+                            webChromeClient = object : WebChromeClient() {
+                                override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
+                                    if (view == null || fullscreenRef.value != null) {
+                                        callback?.onCustomViewHidden()
+                                        return
+                                    }
+                                    fullscreenRef.value = view
+                                    chromeRef.value = callback
+                                    fullscreen = true
+                                    this@apply.addView(view, FrameLayout.LayoutParams(
+                                        ViewGroup.LayoutParams.MATCH_PARENT,
+                                        ViewGroup.LayoutParams.MATCH_PARENT
+                                    ))
+                                    browserFocus(view)
+                                }
+                                override fun onHideCustomView() {
+                                    fullscreenRef.value?.let { this@apply.removeView(it) }
+                                    fullscreenRef.value = null
+                                    chromeRef.value = null
+                                    fullscreen = false
+                                }
+                            }
+                            loadUrl(embedUrl)
+                        }
+                        webViewRef.value = browser
+                        addView(browser, FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        ))
                     }
                 },
-                update = { view -> if (view.url != embedUrl) view.loadUrl(embedUrl) },
                 modifier = Modifier.fillMaxSize()
             )
-        } else {
-        AndroidView(factory = { PlayerView(it).apply { this.player = player; useController = true } }, modifier = Modifier.fillMaxSize())
+        } else if (url != null) {
+            AndroidView(factory = { PlayerView(it).apply {
+                this.player = player
+                useController = true
+            } }, modifier = Modifier.fillMaxSize())
         }
-        if (url == null) Text(error ?: "Loading video…", color = Color.White, modifier = Modifier.align(Alignment.Center))
-        Box(Modifier.align(Alignment.TopStart).padding(20.dp)) { TvButton("Back") { onBack() } }
+        if (loading && error == null) {
+            Text("Loading player…", color = Color.White, modifier = Modifier.align(Alignment.Center))
+        }
+        error?.let {
+            Text(it.take(240), color = Color.White, modifier = Modifier.align(Alignment.Center).padding(32.dp))
+        }
+        if (!fullscreen) {
+            Box(Modifier.align(Alignment.TopStart).padding(20.dp)) {
+                TvButton("Back") { onBack() }
+            }
+        }
     }
+}
+
+private fun browserFocus(view: View) {
+    view.isFocusableInTouchMode = true
+    view.requestFocus()
 }
