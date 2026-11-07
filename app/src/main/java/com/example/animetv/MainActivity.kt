@@ -27,6 +27,8 @@ import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
+import org.jsoup.Jsoup
+import org.jsoup.nodes.Document
 
 private val background = Color(0xFF101018)
 private val accent = Color(0xFFE73B58)
@@ -101,7 +103,42 @@ class AnimeApi {
             }
         } catch (e: Exception) { "Catalog check failed: ${e.javaClass.simpleName}: ${e.message ?: "unknown error"}" }
     }
+    private suspend fun websitePage(path: String): Document = withContext(Dispatchers.IO) {
+        val url = "https://aniwatchtv.ws" + path
+        client.newCall(Request.Builder().url(url)
+            .header("User-Agent", "Mozilla/5.0 (Linux; Android 11; Android TV) AppleWebKit/537.36 Chrome/120.0 Safari/537.36")
+            .build()).execute().use { response ->
+            require(response.isSuccessful) { "Website HTTP ${response.code}" }
+            val html = response.body?.string().orEmpty()
+            require(html.isNotBlank()) { "Website returned an empty page" }
+            Jsoup.parse(html, response.request.url.toString())
+        }
+    }
+    private fun extractWebsiteAnime(document: Document): List<Anime> {
+        val result = linkedMapOf<String, Anime>()
+        document.select("a[href]").forEach { anchor ->
+            val href = anchor.attr("abs:href")
+            val path = runCatching { java.net.URI(href).path.orEmpty() }.getOrDefault("")
+            val id = when {
+                path.startsWith("/watch/") -> path.removePrefix("/watch/")
+                path.startsWith("/anime/") -> path.removePrefix("/anime/")
+                else -> ""
+            }
+            if (id.isBlank()) return@forEach
+            val card = anchor.closest(".flw-item, .film_list-wrap, .film-detail, .swiper-slide, .deslide-item, .item") ?: anchor
+            val name = anchor.attr("title").ifBlank {
+                card.selectFirst(".film-name, .dynamic-name, .desi-head-title, .film-title, img[alt]")?.let {
+                    it.attr("title").ifBlank { it.attr("alt").ifBlank { it.text() } }
+                }.orEmpty()
+            }.ifBlank { anchor.selectFirst("img[alt]")?.attr("alt").orEmpty() }
+                .ifBlank { anchor.text() }.trim()
+            if (name.isNotBlank()) result.putIfAbsent(id, Anime(id, name))
+        }
+        return result.values.toList()
+    }
+    private val configuredApi get() = base.startsWith("https://") && !base.contains("example.invalid")
     suspend fun home(): List<Anime> {
+        if (!configuredApi) return extractWebsiteAnime(websitePage("/"))
         val json = data(get("$prefix/home"))
         val spotlight = animeList(json.optJSONArray("spotlightAnimes") ?: json.optJSONArray("spotlight"))
         val trending = animeList(json.optJSONArray("trendingAnimes") ?: json.optJSONArray("trending"))
@@ -109,10 +146,12 @@ class AnimeApi {
         return (spotlight + trending + latest).distinctBy { it.id }
     }
     suspend fun search(q: String): List<Anime> {
+        if (!configuredApi) return extractWebsiteAnime(websitePage("/search?keyword=${enc(q)}"))
         val json = data(get("$prefix/search?q=${enc(q)}"))
         return animeList(json.optJSONArray("animes") ?: json.optJSONArray("items"))
     }
     suspend fun episodes(id: String): List<Episode> {
+        if (!configuredApi) throw IllegalStateException("Episode data requires a verified website endpoint; catalog-only mode is active")
         val json = data(get("$prefix/anime/${enc(id)}/episodes"))
         val arr = json.optJSONArray("episodes") ?: return emptyList()
         return (0 until arr.length()).mapNotNull { index ->
@@ -123,6 +162,7 @@ class AnimeApi {
         }.filter { it.id.isNotBlank() }
     }
     suspend fun stream(id: String, server: String, category: String): String {
+        if (!configuredApi) throw IllegalStateException("Playback endpoint not verified yet")
         val json = data(get("$prefix/episode/sources?animeEpisodeId=${enc(id)}&server=${enc(server)}&category=${enc(category)}"))
         val sources = json.optJSONArray("sources")
         require(sources != null && sources.length() > 0) { "No playable sources returned" }
