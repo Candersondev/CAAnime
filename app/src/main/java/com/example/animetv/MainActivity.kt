@@ -270,8 +270,58 @@ class AnimeApi {
         }
         "Server lookup unsuccessful: " + errors.joinToString("; ").take(220)
     }
+    private suspend fun websiteStream(episodeId: String, server: String, category: String): String = withContext(Dispatchers.IO) {
+        val serversPath = "/api/theme/episode/servers?episodeId=${enc(episodeId)}"
+        val request = Request.Builder().url("https://aniwatchtv.ws$serversPath")
+            .header("Referer", "https://aniwatchtv.ws/")
+            .header("X-Requested-With", "XMLHttpRequest").build()
+        val raw = client.newCall(request).execute().use { response ->
+            require(response.isSuccessful) { "Server list HTTP ${response.code}" }
+            response.body?.string().orEmpty()
+        }
+        val html = if (raw.trimStart().startsWith("{")) JSONObject(raw).optString("html") else raw
+        val doc = Jsoup.parse(html)
+        val requested = when (server.lowercase()) {
+            "hd-1" -> "hd-1"
+            "vidstream-2" -> "vidstream"
+            "zokoanime" -> "zokoanime"
+            else -> server.lowercase()
+        }
+        val matching = doc.select("[data-hash], [data-id], [data-server-id]").firstOrNull { node ->
+            val name = node.text().lowercase().replace(" ", "").replace("-", "")
+            name.contains(requested.replace("-", ""))
+        } ?: throw IllegalStateException("Selected server is not available for this episode; try ZokoAnime")
+        val token = matching.attr("data-hash").ifBlank { matching.attr("data-id").ifBlank { matching.attr("data-server-id") } }
+        require(token.isNotBlank()) { "Selected server has no source reference" }
+        val candidates = listOf(
+            "/api/theme/episode/sources?id=${enc(token)}",
+            "/ajax/v2/episode/sources?id=${enc(token)}"
+        )
+        val errors = mutableListOf<String>()
+        for (path in candidates) {
+            try {
+                val sourceRequest = Request.Builder().url("https://aniwatchtv.ws$path")
+                    .header("Referer", "https://aniwatchtv.ws/")
+                    .header("X-Requested-With", "XMLHttpRequest").build()
+                val json = client.newCall(sourceRequest).execute().use { response ->
+                    require(response.isSuccessful) { "HTTP ${response.code}" }
+                    JSONObject(response.body?.string().orEmpty())
+                }
+                val data = json.optJSONObject("data") ?: json
+                val source = data.optString("link").ifBlank { data.optString("url") }
+                val media = data.optJSONArray("sources")?.optJSONObject(0)?.optString("url").orEmpty()
+                val candidate = source.ifBlank { media }
+                if (candidate.startsWith("https://") &&
+                    (candidate.contains(".m3u8", true) || candidate.contains(".mp4", true)))
+                    return@withContext candidate
+                if (candidate.isNotBlank()) errors.add("$path: embed URL returned, not a direct media stream")
+                else errors.add("$path: no media URL")
+            } catch (e: Exception) { errors.add("$path: ${e.message ?: "request failed"}") }
+        }
+        throw IllegalStateException("No native-playable source found: ${errors.joinToString("; ").take(180)}")
+    }
     suspend fun stream(id: String, server: String, category: String): String {
-        if (!configuredApi) throw IllegalStateException("Playback endpoint not verified yet")
+        if (!configuredApi) return websiteStream(id, server, category)
         val json = data(get("$prefix/episode/sources?animeEpisodeId=${enc(id)}&server=${enc(server)}&category=${enc(category)}"))
         val sources = json.optJSONArray("sources")
         require(sources != null && sources.length() > 0) { "No playable sources returned" }
