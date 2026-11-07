@@ -1,6 +1,9 @@
 package com.example.animetv
 
 import android.os.Bundle
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.webkit.WebChromeClient
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.BackHandler
@@ -273,8 +276,8 @@ class AnimeApi {
         "Server lookup unsuccessful: " + errors.joinToString("; ").take(220)
     }
     private suspend fun websiteStream(episodeId: String, server: String, category: String): String = withContext(Dispatchers.IO) {
-        val serversPath = "/api/theme/episode/servers?episodeId=${enc(episodeId)}"
-        val request = Request.Builder().url("https://aniwatchtv.ws$serversPath")
+        val path = "/api/theme/episode/servers?episodeId=${enc(episodeId)}"
+        val request = Request.Builder().url("https://aniwatchtv.ws$path")
             .header("Referer", "https://aniwatchtv.ws/")
             .header("X-Requested-With", "XMLHttpRequest").build()
         val raw = client.newCall(request).execute().use { response ->
@@ -282,45 +285,18 @@ class AnimeApi {
             response.body?.string().orEmpty()
         }
         val html = if (raw.trimStart().startsWith("{")) JSONObject(raw).optString("html") else raw
-        val doc = Jsoup.parse(html)
-        val requested = when (server.lowercase()) {
-            "hd-1" -> "hd-1"
-            "vidstream-2" -> "vidstream"
-            "zokoanime" -> "zokoanime"
-            else -> server.lowercase()
-        }
-        val matching = doc.select("[data-hash], [data-id], [data-server-id]").firstOrNull { node ->
-            val name = node.text().lowercase().replace(" ", "").replace("-", "")
-            name.contains(requested.replace("-", ""))
-        } ?: throw IllegalStateException("Selected server is not available for this episode; try ZokoAnime")
-        val token = matching.attr("data-hash").ifBlank { matching.attr("data-id").ifBlank { matching.attr("data-server-id") } }
-        require(token.isNotBlank()) { "Selected server has no source reference" }
-        val candidates = listOf(
-            "/api/theme/episode/sources?id=${enc(token)}",
-            "/ajax/v2/episode/sources?id=${enc(token)}"
-        )
-        val errors = mutableListOf<String>()
-        for (path in candidates) {
-            try {
-                val sourceRequest = Request.Builder().url("https://aniwatchtv.ws$path")
-                    .header("Referer", "https://aniwatchtv.ws/")
-                    .header("X-Requested-With", "XMLHttpRequest").build()
-                val json = client.newCall(sourceRequest).execute().use { response ->
-                    require(response.isSuccessful) { "HTTP ${response.code}" }
-                    JSONObject(response.body?.string().orEmpty())
-                }
-                val data = json.optJSONObject("data") ?: json
-                val source = data.optString("link").ifBlank { data.optString("url") }
-                val media = data.optJSONArray("sources")?.optJSONObject(0)?.optString("url").orEmpty()
-                val candidate = source.ifBlank { media }
-                if (candidate.startsWith("https://") &&
-                    (candidate.contains(".m3u8", true) || candidate.contains(".mp4", true)))
-                    return@withContext candidate
-                if (candidate.isNotBlank()) errors.add("$path: embed URL returned, not a direct media stream")
-                else errors.add("$path: no media URL")
-            } catch (e: Exception) { errors.add("$path: ${e.message ?: "request failed"}") }
-        }
-        throw IllegalStateException("No native-playable source found: ${errors.joinToString("; ").take(180)}")
+        val requested = server.lowercase().replace("-", "").replace(" ", "")
+        val entry = Jsoup.parse(html).select("[data-hash]").firstOrNull { node ->
+            node.text().lowercase().replace("-", "").replace(" ", "").contains(requested)
+        } ?: throw IllegalStateException("Selected server is unavailable; try ZokoAnime")
+        val hash = entry.attr("data-hash")
+        val decoded = try {
+            String(android.util.Base64.decode(hash, android.util.Base64.DEFAULT), Charsets.UTF_8)
+        } catch (e: Exception) { throw IllegalStateException("Invalid server embed reference") }
+        val uri = runCatching { java.net.URI(decoded) }.getOrNull()
+        if (uri?.scheme != "https" || uri.host.isNullOrBlank())
+            throw IllegalStateException("Server returned an invalid embed URL")
+        decoded
     }
     suspend fun stream(id: String, server: String, category: String): String {
         if (!configuredApi) return websiteStream(id, server, category)
@@ -475,9 +451,28 @@ fun VideoScreen(api: AnimeApi, episodeId: String, server: String, category: Stri
     }
     val player = remember(context) { ExoPlayer.Builder(context).build() }
     DisposableEffect(player) { onDispose { player.release() } }
-    LaunchedEffect(url) { url?.let { player.setMediaItem(MediaItem.fromUri(it)); player.prepare(); player.playWhenReady = true } }
+    val isEmbed = url?.let { !it.contains(".m3u8", true) && !it.contains(".mp4", true) } ?: false
+    LaunchedEffect(url) { url?.takeUnless { isEmbed }?.let { player.setMediaItem(MediaItem.fromUri(it)); player.prepare(); player.playWhenReady = true } }
     Box(Modifier.fillMaxSize().background(Color.Black)) {
+        if (isEmbed && url != null) {
+            val embedUrl = url!!
+            AndroidView(
+                factory = { ctx ->
+                    WebView(ctx).apply {
+                        settings.javaScriptEnabled = true
+                        settings.domStorageEnabled = true
+                        webViewClient = WebViewClient()
+                        webChromeClient = WebChromeClient()
+                        isFocusable = true
+                        loadUrl(embedUrl)
+                    }
+                },
+                update = { view -> if (view.url != embedUrl) view.loadUrl(embedUrl) },
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
         AndroidView(factory = { PlayerView(it).apply { this.player = player; useController = true } }, modifier = Modifier.fillMaxSize())
+        }
         if (url == null) Text(error ?: "Loading video…", color = Color.White, modifier = Modifier.align(Alignment.Center))
         Box(Modifier.align(Alignment.TopStart).padding(20.dp)) { TvButton("Back") { onBack() } }
     }
