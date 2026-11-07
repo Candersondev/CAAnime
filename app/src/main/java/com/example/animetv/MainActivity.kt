@@ -23,6 +23,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
@@ -63,6 +64,16 @@ class AnimeApi {
                     item.optString("description").ifBlank { item.optString("discription") })
             }
         }.filter { it.id.isNotBlank() && it.title.isNotBlank() }
+    }
+    suspend fun connectionCheck(): String = withContext(Dispatchers.IO) {
+        val target = "https://aniwatchtv.ws/"
+        try {
+            client.newCall(Request.Builder().url(target).header("User-Agent", "CAAnime/0.1 (Android TV)").build()).execute().use { response ->
+                val type = response.header("Content-Type") ?: "unknown"
+                val finalHost = response.request.url.host
+                "Website: HTTP ${response.code}; type=$type; host=$finalHost. This checks reachability only, not catalog or streaming access."
+            }
+        } catch (e: Exception) { "Website check failed: ${e.javaClass.simpleName}: ${e.message ?: "unknown error"}" }
     }
     suspend fun home(): List<Anime> {
         val json = data(get("$prefix/home"))
@@ -114,6 +125,9 @@ fun AnimeApp() {
     var episodes by remember { mutableStateOf<List<Episode>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
+    var diagnostic by remember { mutableStateOf<String?>(null) }
+    var checking by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     BackHandler(playing != null || screen != "home") {
         if (playing != null) playing = null else screen = "home"
     }
@@ -139,6 +153,13 @@ fun AnimeApp() {
             TvButton("Home") { screen = "home" }
             TvButton("Search") { screen = "search" }
             TvButton("Refresh") { refresh++ }
+            TvButton("Check website") {
+                scope.launch {
+                    checking = true
+                    diagnostic = api.connectionCheck()
+                    checking = false
+                }
+            }
         }
         Spacer(Modifier.height(28.dp))
         if (screen == "search") {
@@ -148,6 +169,8 @@ fun AnimeApp() {
                 decorationBox = { inner -> Column { if (query.isEmpty()) Text("Search anime…", color = Color.LightGray); inner() } })
             Spacer(Modifier.height(24.dp))
         }
+        if (checking) Text("Checking website…", color = Color.LightGray)
+        diagnostic?.let { Text(it, color = Color.LightGray) }
         if (loading) LinearProgressIndicator(color = accent)
         if (error != null) Text("Connection: $error", color = Color(0xFFFFB4AB))
         when (screen) {
