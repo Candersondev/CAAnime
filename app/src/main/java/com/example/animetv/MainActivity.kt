@@ -186,8 +186,51 @@ class AnimeApi {
         val json = data(get("$prefix/search?q=${enc(q)}"))
         return animeList(json.optJSONArray("animes") ?: json.optJSONArray("items"))
     }
+    private suspend fun websiteEpisodes(animeId: String): List<Episode> = withContext(Dispatchers.IO) {
+        val numericId = Regex("(\\d+)$").find(animeId)?.value
+            ?: throw IllegalArgumentException("Anime has no numeric identifier: $animeId")
+        val candidates = listOf(
+            "/api/theme/episode/list/$numericId",
+            "/ajax/v2/episode/list/$numericId"
+        )
+        val errors = mutableListOf<String>()
+        for (path in candidates) {
+            try {
+                val request = Request.Builder().url("https://aniwatchtv.ws$path")
+                    .header("Referer", "https://aniwatchtv.ws/watch/$animeId")
+                    .header("User-Agent", "Mozilla/5.0 (Linux; Android 11; Android TV) AppleWebKit/537.36 Chrome/120.0 Safari/537.36")
+                    .header("X-Requested-With", "XMLHttpRequest")
+                    .build()
+                val html = client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) throw IllegalStateException("HTTP ${response.code}")
+                    val raw = response.body?.string().orEmpty()
+                    if (raw.trimStart().startsWith("{")) JSONObject(raw).optString("html") else raw
+                }
+                if (html.isBlank()) throw IllegalStateException("Empty episode HTML")
+                val doc = Jsoup.parse(html, "https://aniwatchtv.ws")
+                val found = doc.select("a[data-id], a[href*='?ep='], a[href*='&ep=']").mapIndexedNotNull { index, node ->
+                    val episodeId = node.attr("data-id").ifBlank {
+                        Regex("[?&]ep=(\\d+)").find(node.attr("href"))?.groupValues?.get(1).orEmpty()
+                    }
+                    if (episodeId.isBlank()) return@mapIndexedNotNull null
+                    val number = node.attr("data-number").toIntOrNull()
+                        ?: node.selectFirst(".ssli-order, .ep-number")?.text()?.trim()?.toIntOrNull()
+                        ?: index + 1
+                    val title = node.attr("title").ifBlank {
+                        node.selectFirst(".ep-name, .e-dynamic-name")?.text().orEmpty()
+                    }.ifBlank { "Episode $number" }
+                    Episode(episodeId, title)
+                }.distinctBy { it.id }
+                if (found.isNotEmpty()) return@withContext found
+                errors.add("$path: no episode entries")
+            } catch (e: Exception) {
+                errors.add("$path: ${e.message ?: e.javaClass.simpleName}")
+            }
+        }
+        throw IllegalStateException("Episode endpoints unavailable: ${errors.joinToString("; ").take(240)}")
+    }
     suspend fun episodes(id: String): List<Episode> {
-        if (!configuredApi) throw IllegalStateException("Episode data requires a verified website endpoint; catalog-only mode is active")
+        if (!configuredApi) return websiteEpisodes(id)
         val json = data(get("$prefix/anime/${enc(id)}/episodes"))
         val arr = json.optJSONArray("episodes") ?: return emptyList()
         return (0 until arr.length()).mapNotNull { index ->
