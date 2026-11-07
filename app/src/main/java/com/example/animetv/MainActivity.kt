@@ -31,6 +31,8 @@ private val background = Color(0xFF101018)
 private val accent = Color(0xFFE73B58)
 data class Anime(val id: String, val title: String, val description: String = "")
 data class Episode(val id: String, val title: String)
+data class StreamServer(val label: String, val apiId: String)
+private val candidateServers = listOf(StreamServer("HD-1", "hd-1"), StreamServer("Vidstream-2", "vidstream-2"), StreamServer("ZokoAnime", "zokoanime"))
 
 /** HiAnime-compatible API client.
  * Set animeApiUrl to an authorized HTTPS API deployment root.
@@ -83,8 +85,8 @@ class AnimeApi {
             }
         }.filter { it.id.isNotBlank() }
     }
-    suspend fun stream(id: String): String {
-        val json = data(get("$prefix/episode/sources?animeEpisodeId=${enc(id)}&server=hd-1&category=sub"))
+    suspend fun stream(id: String, server: String, category: String): String {
+        val json = data(get("$prefix/episode/sources?animeEpisodeId=${enc(id)}&server=${enc(server)}&category=${enc(category)}"))
         val sources = json.optJSONArray("sources")
         require(sources != null && sources.length() > 0) { "No playable sources returned" }
         return sources.getJSONObject(0).getString("url")
@@ -104,6 +106,8 @@ fun AnimeApp() {
     var screen by remember { mutableStateOf("home") }
     var selected by remember { mutableStateOf<Anime?>(null) }
     var playing by remember { mutableStateOf<String?>(null) }
+    var chosenServer by remember { mutableStateOf(candidateServers.first()) }
+    var chosenCategory by remember { mutableStateOf("sub") }
     var query by remember { mutableStateOf("") }
     var refresh by remember { mutableIntStateOf(0) }
     var list by remember { mutableStateOf<List<Anime>>(emptyList()) }
@@ -126,7 +130,7 @@ fun AnimeApp() {
         finally { loading = false }
     }
     if (playing != null) {
-        VideoScreen(api, playing!!, onBack = { playing = null })
+        VideoScreen(api, playing!!, chosenServer.apiId, chosenCategory, onBack = { playing = null })
         return
     }
     Column(Modifier.fillMaxSize().background(background).padding(36.dp)) {
@@ -151,6 +155,20 @@ fun AnimeApp() {
                 Text(selected?.title ?: "Anime", color = Color.White, fontSize = 34.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(12.dp))
                 Text(selected?.description ?: "", color = Color.LightGray)
+                Spacer(Modifier.height(22.dp))
+                Text("Playback options", color = Color.White, fontSize = 24.sp)
+                Spacer(Modifier.height(12.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    candidateServers.forEach { server ->
+                        TvButton((if (chosenServer == server) "✓ " else "") + server.label) { chosenServer = server }
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    listOf("sub", "dub").forEach { category ->
+                        TvButton((if (chosenCategory == category) "✓ " else "") + category.uppercase()) { chosenCategory = category }
+                    }
+                }
                 Spacer(Modifier.height(22.dp))
                 Text("Episodes", color = Color.White, fontSize = 24.sp)
                 Spacer(Modifier.height(12.dp))
@@ -181,12 +199,12 @@ fun TvButton(label: String, onClick: () -> Unit) {
 }
 
 @Composable
-fun VideoScreen(api: AnimeApi, episodeId: String, onBack: () -> Unit) {
+fun VideoScreen(api: AnimeApi, episodeId: String, server: String, category: String, onBack: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    var url by remember(episodeId) { mutableStateOf<String?>(null) }
+    var url by remember(episodeId, server, category) { mutableStateOf<String?>(null) }
     var error by remember(episodeId) { mutableStateOf<String?>(null) }
-    LaunchedEffect(episodeId) {
-        try { url = api.stream(episodeId) } catch (e: Exception) { error = e.message }
+    LaunchedEffect(episodeId, server, category) {
+        try { url = api.stream(episodeId, server, category) } catch (e: Exception) { error = e.message }
     }
     val player = remember(context) { ExoPlayer.Builder(context).build() }
     DisposableEffect(player) { onDispose { player.release() } }
