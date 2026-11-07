@@ -6,6 +6,8 @@ import android.webkit.WebViewClient
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.net.Uri
 import android.webkit.WebSettings
 import android.view.View
 import android.view.ViewGroup
@@ -448,6 +450,12 @@ fun TvButton(label: String, onClick: () -> Unit) {
     }
 }
 
+private val blockedAdHosts = setOf("doubleclick.net", "googlesyndication.com", "googleadservices.com", "adnxs.com", "popads.net", "popcash.net", "propellerads.com", "onclickads.net", "exoclick.com", "exosrv.com")
+private fun isKnownAdHost(host: String?): Boolean {
+    val h = host?.lowercase()?.trimEnd('.') ?: return false
+    return blockedAdHosts.any { h == it || h.endsWith(".$it") }
+}
+
 @Composable
 fun VideoScreen(api: AnimeApi, episodeId: String, server: String, category: String, onBack: () -> Unit) {
     val context = LocalContext.current
@@ -514,10 +522,23 @@ fun VideoScreen(api: AnimeApi, episodeId: String, server: String, category: Stri
                             settings.cacheMode = WebSettings.LOAD_DEFAULT
                             settings.useWideViewPort = true
                             settings.loadWithOverviewMode = true
+                            settings.javaScriptCanOpenWindowsAutomatically = false
+                            settings.setSupportMultipleWindows(true)
                             setBackgroundColor(android.graphics.Color.BLACK)
                             isFocusable = true
                             isFocusableInTouchMode = true
                             webViewClient = object : WebViewClient() {
+                                override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+                                    if (!isKnownAdHost(request?.url?.host)) return null
+                                    return WebResourceResponse("text/plain", "UTF-8", 204, "No Content", emptyMap(), java.io.ByteArrayInputStream(ByteArray(0)))
+                                }
+                                override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                                    if (request == null || !request.isForMainFrame) return false
+                                    val target = request.url
+                                    val embedHost = Uri.parse(embedUrl).host
+                                    return isKnownAdHost(target.host) || target.scheme !in listOf("https", "http") ||
+                                        !target.host.equals(embedHost, ignoreCase = true)
+                                }
                                 override fun onPageFinished(view: WebView?, url: String?) {
                                     loading = false
                                 }
@@ -529,6 +550,7 @@ fun VideoScreen(api: AnimeApi, episodeId: String, server: String, category: Stri
                                 }
                             }
                             webChromeClient = object : WebChromeClient() {
+                                override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: android.os.Message?): Boolean = false
                                 override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
                                     if (view == null || fullscreenRef.value != null) {
                                         callback?.onCustomViewHidden()
