@@ -240,6 +240,36 @@ class AnimeApi {
             }
         }.filter { it.id.isNotBlank() }
     }
+    suspend fun websiteServers(episodeId: String): String = withContext(Dispatchers.IO) {
+        val paths = listOf(
+            "/api/theme/episode/servers?episodeId=${enc(episodeId)}",
+            "/ajax/v2/episode/servers?episodeId=${enc(episodeId)}"
+        )
+        val errors = mutableListOf<String>()
+        for (path in paths) {
+            try {
+                val request = Request.Builder().url("https://aniwatchtv.ws$path")
+                    .header("Referer", "https://aniwatchtv.ws/")
+                    .header("X-Requested-With", "XMLHttpRequest").build()
+                val html = client.newCall(request).execute().use { response ->
+                    require(response.isSuccessful) { "HTTP ${response.code}" }
+                    val raw = response.body?.string().orEmpty()
+                    if (raw.trimStart().startsWith("{")) JSONObject(raw).optString("html") else raw
+                }
+                val doc = Jsoup.parse(html)
+                val servers = doc.select(".server-item[data-id], [data-server-id], [data-hash]").mapNotNull { node ->
+                    val id = node.attr("data-id").ifBlank { node.attr("data-server-id") }
+                    val name = node.text().trim()
+                    val hash = node.attr("data-hash")
+                    if (name.isBlank() || (id.isBlank() && hash.isBlank())) null
+                    else "$name (ID ${id.ifBlank { "none" }}, embed=${hash.isNotBlank()})"
+                }.distinct()
+                if (servers.isNotEmpty()) return@withContext "Servers: " + servers.joinToString(" | ")
+                errors.add("$path: no server entries")
+            } catch (e: Exception) { errors.add("$path: ${e.message ?: "request failed"}") }
+        }
+        "Server lookup unsuccessful: " + errors.joinToString("; ").take(220)
+    }
     suspend fun stream(id: String, server: String, category: String): String {
         if (!configuredApi) throw IllegalStateException("Playback endpoint not verified yet")
         val json = data(get("$prefix/episode/sources?animeEpisodeId=${enc(id)}&server=${enc(server)}&category=${enc(category)}"))
@@ -345,6 +375,16 @@ fun AnimeApp() {
                     }
                 }
                 Spacer(Modifier.height(22.dp))
+                if (episodes.isNotEmpty()) {
+                    Spacer(Modifier.height(12.dp))
+                    TvButton("Find episode servers") {
+                        scope.launch {
+                            checking = true
+                            diagnostic = api.websiteServers(episodes.first().id)
+                            checking = false
+                        }
+                    }
+                }
                 Text("Episodes", color = Color.White, fontSize = 24.sp)
                 Spacer(Modifier.height(12.dp))
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
