@@ -8,6 +8,8 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.*
@@ -372,7 +374,7 @@ fun AnimeApp() {
         VideoScreen(api, playing!!, chosenServer.apiId, chosenCategory, onBack = { playing = null })
         return
     }
-    Column(Modifier.fillMaxSize().background(background).padding(36.dp)) {
+    Column(Modifier.fillMaxSize().background(background).verticalScroll(rememberScrollState()).padding(36.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(18.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("CAANIME", color = accent, fontSize = 28.sp, fontWeight = FontWeight.Black)
             TvButton("Home") { screen = "home" }
