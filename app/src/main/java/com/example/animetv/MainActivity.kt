@@ -2,6 +2,7 @@ package com.example.animetv
 
 import android.os.Bundle
 import android.content.Context
+import android.util.Log
 import java.util.concurrent.atomic.AtomicReference
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -599,7 +600,13 @@ fun VideoScreen(api: AnimeApi, episodeId: String, server: String, category: Stri
                             isFocusableInTouchMode = true
                             webViewClient = object : WebViewClient() {
                                 override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
-                                    if (!PlayerAdBlocker.blocks(request?.url?.host)) return null
+                                    val host = request?.url?.host.orEmpty()
+                                    val blocked = PlayerAdBlocker.blocks(host)
+                                    if (host.isNotBlank()) {
+                                        // Domain-only logging: never log full URLs, tokens or query strings.
+                                        Log.d("CAAnimeAdFilter", "request host=$host blocked=$blocked mainFrame=${request?.isForMainFrame}")
+                                    }
+                                    if (!blocked) return null
                                     return WebResourceResponse("text/plain", "UTF-8", 204, "No Content", emptyMap(), java.io.ByteArrayInputStream(ByteArray(0)))
                                 }
                                 override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
